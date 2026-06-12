@@ -52,10 +52,34 @@ def lookup_plant(plant_name: str) -> dict:
 
     Before writing code, complete the lookup_plant section of specs/tool-functions-spec.md.
     """
+    # Normalize first: handle casing and stray whitespace before any comparison
+    # so "Pothos", "POTHOS", and " pothos " all match the same entry.
+    normalized = plant_name.strip().lower()
+
+    # Search order (cheapest / most likely match first):
+    #   1. direct key  2. display name  3. scientific name  4. aliases
+    for key, plant in _plant_db.items():
+        if (
+            normalized == key.lower()
+            or normalized == plant["display_name"].lower()
+            or normalized == plant["scientific_name"].lower()
+            or normalized in [alias.lower() for alias in plant["aliases"]]
+        ):
+            return {"found": True, "plant": plant}
+
+    # Not found: give the agent something actionable, not just "not found".
+    # Listing the known plants lets the LLM suggest a close alternative or
+    # tell the user exactly what the database supports.
+    known = ", ".join(p["display_name"] for p in _plant_db.values())
     return {
         "found": False,
-        "name": plant_name,
-        "message": "Plant lookup not yet implemented. Complete Milestone 1.",
+        "name": normalized,
+        "message": (
+            f"No plant matching '{normalized}' was found in the database. "
+            f"The database currently covers these plants: {known}. "
+            f"Suggest the closest match if one of these is likely what the user meant, "
+            f"or let the user know this plant isn't covered."
+        ),
     }
 
 

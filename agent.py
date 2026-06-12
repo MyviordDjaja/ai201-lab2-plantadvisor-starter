@@ -132,4 +132,63 @@ def run_agent(user_message: str, history: list) -> str:
 
     Before writing code, complete specs/agent-loop-spec.md.
     """
-    return "🌱 Agent not yet implemented. Complete Milestone 2 to activate the Plant Advisor."
+    FALLBACK_MESSAGE = (
+        "Sorry — I wasn't able to put together an answer for that just now. "
+        "Could you rephrase your question or tell me which plant you're asking about?"
+    )
+
+    # 1. Build the messages list: system prompt + replayed history + new user turn.
+    #    Copy only role/content from history — Gradio may attach extra keys.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        # 2. Tool-calling loop, capped at MAX_TOOL_ROUNDS to prevent runaway loops.
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = _client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="auto",
+            )
+            assistant_message = response.choices[0].message
+
+            # Termination (a): no tool calls means the LLM has a final answer.
+            if not assistant_message.tool_calls:
+                return assistant_message.content or FALLBACK_MESSAGE
+
+            # Tool calls present: append the assistant message BEFORE any results,
+            # so each tool result can be matched to the call that requested it.
+            messages.append(assistant_message)
+
+            for tool_call in assistant_message.tool_calls:
+                tool_name = tool_call.function.name
+                raw_args = tool_call.function.arguments
+                # Models sometimes send "null"/"" for no-arg tools — normalize to {}.
+                tool_args = json.loads(raw_args) if raw_args else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
+                tool_result = dispatch_tool(tool_name, tool_args)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                })
+
+        # Termination (b): hit MAX_TOOL_ROUNDS while still requesting tools.
+        # Force a plain-text answer from the data gathered so far — no tools, so
+        # the model can't ask for more.
+        final_response = _client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            tool_choice="none",
+        )
+        return final_response.choices[0].message.content or FALLBACK_MESSAGE
+
+    except Exception as e:
+        # Never crash the UI — surface a readable message instead of a stack trace.
+        print(f"  ✗ Agent error: {e}")
+        return FALLBACK_MESSAGE

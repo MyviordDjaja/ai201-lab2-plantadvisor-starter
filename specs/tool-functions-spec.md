@@ -73,7 +73,20 @@ the broadest net, so they go last.
 *Aliases are stored as a list of strings. How will you check if the normalized input matches any alias in the list? Write your approach in pseudocode or plain English.*
 
 ```
-[your answer here]
+Loop over every plant in _plant_db. For each one, lowercase every alias in its
+"aliases" list and test membership with `in`:
+
+    normalized in [alias.lower() for alias in plant["aliases"]]
+
+The input is already normalized (stripped + lowercased) once up front, so each
+alias only needs to be lowercased for the comparison. This is O(plants × aliases),
+which is fine for 15 plants.
+
+If the database grew to thousands of plants, I'd precompute a single lookup index
+once at module load — a dict mapping every normalized name (key, display name,
+scientific name, and each alias) to its plant slug. Then each lookup is one O(1)
+dict access instead of scanning every plant and rebuilding the lowercased alias
+list on every call.
 ```
 
 ---
@@ -83,7 +96,18 @@ the broadest net, so they go last.
 *When a plant isn't found, the agent will read your message and use it to decide what to tell the user. Write the exact string you'll return — make it useful to the agent, not just to a human reading logs.*
 
 ```
-[your answer here]
+"No plant matching '<normalized>' was found in the database. The database
+currently covers these plants: Pothos, Snake Plant, ZZ Plant, Spider Plant,
+Peace Lily, Aloe Vera, Monstera, Rubber Plant, Boston Fern, Orchid, Fiddle Leaf
+Fig, Calathea, Philodendron, Chinese Evergreen, Succulent. Suggest the closest
+match if one of these is likely what the user meant, or let the user know this
+plant isn't covered."
+
+The list of known plants is built dynamically from _plant_db so it never drifts
+out of sync with the data. A bare "not found" gives the agent nothing to act on;
+naming the covered plants lets the LLM either suggest a close alternative (e.g.
+"dragon tree" → maybe they want a similar care guide) or honestly tell the user
+the plant isn't supported, instead of hallucinating care advice.
 ```
 
 ---
@@ -94,17 +118,24 @@ the broadest net, so they go last.
 
 **Test: does `"devil's ivy"` return the pothos entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — matches via the alias list and returns {"found": True, "plant": <Pothos>}.
 ```
 
 **Test: does `"SNAKE PLANT"` return the snake plant entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — normalization lowercases the input to "snake plant", which matches the
+display name "Snake Plant".lower(). " pothos " (whitespace) and
+"Dracaena trifasciata" (scientific name) also resolve correctly.
 ```
 
 **One edge case you discovered while implementing:**
 ```
-[your answer here]
+The "name" field in the not-found response should be the *normalized* input,
+not the raw input. Returning the normalized value keeps the response consistent
+with what was actually searched and avoids leaking stray casing/whitespace back
+to the agent. Also worth noting: several plants share overlap-prone aliases
+(e.g. "hen and chickens plant" vs. succulent's "hen and chicks") — exact-match
+comparison avoids false positives that substring matching would cause.
 ```
 
 ---
@@ -186,12 +217,14 @@ The full season dict from `_season_data`, plus a `detected_season` boolean. Exam
 
 **Test: does calling with `season=None` return the correct season for the current month?**
 ```
-Current month: [month]
-Expected season: [season]
-Returned season: [season]
+Current month: June (6)
+Expected season: Summer
+Returned season: Summer  (detected_season: True)
 ```
 
 **Test: does calling with `season="winter"` return winter data regardless of the current month?**
 ```
-[yes / no]
+Yes — returns the Winter dict with detected_season: False, even though the
+current month is June. An invalid season string (e.g. "monsoon") falls back to
+auto-detection and returns Summer with detected_season: True.
 ```

@@ -129,7 +129,29 @@ for tool_call in assistant_message.tool_calls:
 *The loop should stop when: (a) the LLM returns a response with no tool calls, OR (b) the MAX_TOOL_ROUNDS limit is reached. Describe how you will detect each condition and what you will return in each case.*
 
 ```
-[your answer here]
+The loop runs at most MAX_TOOL_ROUNDS iterations. Each iteration makes one LLM
+call and inspects assistant_message.tool_calls.
+
+(a) No tool calls — natural exit.
+    If `assistant_message.tool_calls` is falsy (None or empty list), the LLM is
+    done using tools and has produced a final answer. Return
+    `assistant_message.content`, falling back to a static user-readable string if
+    that content is somehow empty/None (the contract says never return "").
+
+(b) MAX_TOOL_ROUNDS reached — safety exit.
+    If the loop completes all MAX_TOOL_ROUNDS iterations and the LLM is STILL
+    asking for tools, we stop looping so we never run forever. At that point we
+    make one final LLM call with `tool_choice="none"`, which forces the model to
+    answer in plain text using the tool results already gathered. Return that
+    content (or the static fallback if empty). This degrades gracefully instead
+    of crashing or returning a half-finished tool-call message.
+
+Edge cases this handles:
+  - Loops forever: capped by MAX_TOOL_ROUNDS; the forced final call has no tools,
+    so it cannot request more.
+  - Empty string: every return path substitutes a fallback when content is falsy.
+  - Exception: API/JSON errors are caught and returned as a friendly message so
+    the Gradio UI shows text rather than a stack trace.
 ```
 
 ---
@@ -139,7 +161,16 @@ for tool_call in assistant_message.tool_calls:
 *Once the loop exits because there are no more tool calls, how do you extract the text content from the response object? What field holds the string you should return?*
 
 ```
-[your answer here]
+The final text lives at `response.choices[0].message.content`.
+
+`response.choices` is a list of completion choices; index 0 is the one we want.
+`.message` is the assistant message object, and `.content` is the plain-text
+string answer. (When the model is instead requesting tools, `.content` is usually
+None and `.tool_calls` is populated — which is exactly why we branch on
+`tool_calls` first and only read `.content` once we know the model is done.)
+
+In code I keep a reference `assistant_message = response.choices[0].message` and
+return `assistant_message.content or FALLBACK_MESSAGE`.
 ```
 
 ---
@@ -151,20 +182,45 @@ for tool_call in assistant_message.tool_calls:
 **Trace of a working agent turn (what tools were called and in what order):**
 
 ```
-Query: "How should I care for my calathea?"
-Round 1 tool call: [tool name, args]
-Round 2 tool call: [tool name, args] (if any)
-Final response: [brief description]
+Query: "How do I care for my pothos?"
+Round 1 tool calls: lookup_plant({'plant_name': 'pothos'})  → found: true
+                    get_seasonal_conditions({})             → Summer (auto-detected)
+Round 2: no tool calls — LLM produced its final answer.
+Final response: Grounded pothos care advice ("allow the top inch of soil to dry
+                out between waterings...") plus seasonal context, citing the care
+                data as the system prompt instructs.
+
+Note: the LLM issued BOTH tool calls in a single assistant message (round 1),
+not one per round. The loop handles this because it iterates over every entry in
+assistant_message.tool_calls and appends a tool result for each before looping.
+
+Query: "My calathea has brown edges"
+Round 1 tool call: lookup_plant({'plant_name': 'calathea'})  → found: true
+                   (no season call — the question isn't season-specific)
+Round 2: no tool calls.
+Final response: Identifies brown edges as tap-water minerals / dry air and
+                recommends filtered/distilled/rainwater — straight from the
+                plant's common_issues data.
 ```
 
 **What happens when you ask about a plant that isn't in the database?**
 
 ```
-[describe the behavior you observed]
+Asked "How do I care for my dragon tree?". The LLM called lookup_plant twice —
+first 'dragon tree', then 'Dracaena' as a guess — both returned found: false with
+the helpful message listing the 15 covered plants. The agent then honestly told
+the user it has no specific data for that plant and offered general houseplant
+guidance, exactly as the system prompt directs. No crash, no hallucinated
+"official" care data.
 ```
 
 **One thing about the tool call API that surprised you:**
 
 ```
-[your answer here]
+A single assistant turn can request MULTIPLE tools at once (parallel tool calls),
+so "round" isn't the same as "one tool call." The loop has to iterate the whole
+tool_calls list and post a matching tool-role result for each tool_call_id before
+calling the LLM again — appending the assistant message once, then all results.
+Also surprising: when the model is calling tools, message.content is typically
+None, which is why we branch on tool_calls first rather than reading content.
 ```
